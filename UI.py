@@ -984,3 +984,927 @@ class DataWindow(NonModalDialog):
             self.update_table()
         else:
             QMessageBox.warning(self, "Normalization Error", "No numeric columns found for normalization.")
+
+    def update_table(self):
+        self.table.setRowCount(self.data.shape[0])
+        self.table.setColumnCount(self.data.shape[1])
+        self.table.setHorizontalHeaderLabels(self.data.columns.astype(str))
+
+        for row in range(self.data.shape[0]):
+            for col in range(self.data.shape[1]):
+                item = QTableWidgetItem(str(self.data.iat[row, col]))
+                self.table.setItem(row, col, item)
+
+        self.table.resizeRowsToContents()
+        self.table.resizeColumnsToContents()
+
+    def handle_save_click(self):
+        file_dialog = QFileDialog(self)
+        file_dialog.setAcceptMode(QFileDialog.AcceptSave)
+        file_dialog.setNameFilter("CSV Files (*.csv)")
+        if file_dialog.exec_():
+            file_path = file_dialog.selectedFiles()[0]
+            if file_path:
+                try:
+                    # Save the current data, whether it's merged or not
+                    data_to_save = self.merged_data if self.merged_data is not None else self.data
+                    data_to_save.to_csv(file_path, index=False)
+                    QMessageBox.information(self, "Save Success", f"Dataset saved to {file_path}")
+                except Exception as e:
+                    QMessageBox.critical(self, "Save Error", f"Failed to save data: {str(e)}")
+
+    def handle_decision_tree_click(self):
+        print("Decision tree button clicked manually")
+        print("Decision tree visualization triggered in handle_decision_tree_click method")
+        if self.data.shape[1] >= 2:
+            params_dialog = DecisionTreeParamsDialog(self.data.columns.tolist(), self)
+            if params_dialog.exec_():
+                params = params_dialog.get_params()
+
+                # Check if this dialog info already exists
+                dialog_info = DialogInfo("DecisionTree", params)
+                existing_dialog = next((d for d in self.dialog_history if d == dialog_info), None)
+                if existing_dialog:
+                    existing_dialog.instance_count += 1
+                    dialog_info = existing_dialog  # Use the existing dialog info
+                else:
+                    self.dialog_history.append(dialog_info)
+
+                print(f"Creating Decision Tree (instance {dialog_info.instance_count})")
+                print("Params returned from dialog:", params)
+                
+                train_columns = params.get('train_columns', [])
+                test_column = params.get('test_column')
+                
+                print("Train columns:", train_columns)
+                print("Test column:", test_column)
+                
+                if not train_columns:
+                    QMessageBox.warning(self, "Invalid Selection", "Please select at least one column for training.")
+                    return
+                
+                if not test_column:
+                    QMessageBox.warning(self, "Invalid Selection", "Please select a column for testing (target variable).")
+                    return
+                
+                if test_column in train_columns:
+                    QMessageBox.warning(self, "Invalid Selection", "Test column cannot be in training columns.")
+                    return
+                
+                X = self.data[train_columns]
+                y = self.data[test_column]
+                
+                # Data preparation (as before)
+                numeric_features = X.select_dtypes(include=['int64', 'float64']).columns
+                categorical_features = X.select_dtypes(include=['object', 'category']).columns
+
+                preprocessor = ColumnTransformer(
+                    transformers=[
+                        ('num', 'passthrough', numeric_features),
+                        ('cat', OneHotEncoder(drop='first', sparse_output=False), categorical_features)
+                    ])
+
+                X_processed = preprocessor.fit_transform(X)
+
+                onehot_encoder = preprocessor.named_transformers_['cat']
+                cat_feature_names = [f"{feature}_{cat}" for feature, cats in zip(categorical_features, onehot_encoder.categories) for cat in cats[1:]]
+                feature_names = list(numeric_features) + cat_feature_names
+
+                if pd.api.types.is_numeric_dtype(y):
+                    unique_values = y.nunique()
+                    is_continuous = unique_values > 10
+                else:
+                    is_continuous = False
+                    unique_values = y.nunique()
+                    label_encoder = LabelEncoder()
+                    y = label_encoder.fit_transform(y)
+
+                if is_continuous:
+                    tree_type = "regression"
+                    criterion = "squared_error"
+                else:
+                    tree_type = "classification"
+                    criterion = "gini"
+
+                target_labels = [str(label) for label in np.unique(y)]
+
+                if params["use_grid_search"]:
+                    param_grid = params.get("grid_search_params", {})
+                    
+                    if not param_grid:
+                        QMessageBox.warning(self, "Invalid Input", "No valid grid search parameters provided.")
+                        return
+
+                    # Create the base model
+                    if tree_type == "classification":
+                        base_model = DecisionTreeClassifier(random_state=42)
+                    else:
+                        base_model = DecisionTreeRegressor(random_state=42)
+
+                    # Fit the best model
+                    grid_search = GridSearchCV(base_model, param_grid, cv=5, n_jobs=-1)
+                    grid_search.fit(X_processed, y)
+                    
+                    best_params = grid_search.best_params_
+                    best_tree = grid_search.best_estimator_
+                    
+                    # Create and show the best tree visualization
+                    best_tree_widget = self.create_tree_visualization(best_tree, X_processed, y, feature_names, target_labels, "Best Decision Tree")
+                    
+                    # Create a dialog to display the best tree and add a button to show all trees
+                    tree_dialog = QDialog(self)
+                    tree_dialog.setWindowTitle("Decision Tree Visualization")
+                    tree_layout = QVBoxLayout(tree_dialog)
+                    
+                    # Display best parameters
+                    best_params_text = QTextEdit()
+                    best_params_text.setPlainText(f"Best parameters: {best_params}")
+                    tree_layout.addWidget(best_params_text)
+                    
+                    tree_layout.addWidget(best_tree_widget)
+                    
+                    # Add button to show all trees
+                    show_all_button = QPushButton("Show All Trees")
+                    show_all_button.clicked.connect(lambda: self.show_all_trees(grid_search, X_processed, y, feature_names, target_labels))
+                    tree_layout.addWidget(show_all_button)
+                    
+                    tree_dialog.setLayout(tree_layout)
+                    tree_dialog.resize(1200, 800)
+                    tree_dialog.show()
+                else:
+                    # Single tree visualization (existing code)
+                    tree_params = {
+                        "max_depth": params["max_depth"],
+                        "min_samples_split": params["min_samples_split"],
+                        "min_samples_leaf": params["min_samples_leaf"],
+                        "criterion": criterion
+                    }
+                    
+                    if tree_type == "classification":
+                        clf = DecisionTreeClassifier(random_state=42, **tree_params)
+                    else:
+                        clf = DecisionTreeRegressor(random_state=42, **tree_params)
+
+                    clf.fit(X_processed, y)
+
+                    # Create and show the decision tree dialog
+                    decision_tree_dialog = QDialog(self)
+                    decision_tree_dialog.setWindowTitle("Decision Tree Visualization")
+                    decision_tree_layout = QVBoxLayout(decision_tree_dialog)
+
+                    # Create matplotlib figure
+                    fig, ax = plt.subplots(figsize=(15, 10))
+                    plot_tree(clf, feature_names=feature_names, class_names=target_labels,
+                            rounded=True, filled=True, fontsize=8, ax=ax,
+                            proportion=True, precision=2, impurity=False, node_ids=True)
+                    plt.title(f"{'Decision Tree Classifier' if tree_type == 'classification' else 'Decision Tree Regressor'} for {test_column}", fontsize=16, fontweight='bold')
+                    plt.tight_layout(pad=1.0)
+
+                    # Add matplotlib figure to dialog
+                    canvas = FigureCanvas(fig)
+                    decision_tree_layout.addWidget(canvas)
+
+                    toolbar = NavigationToolbar(canvas, decision_tree_dialog)
+                    decision_tree_layout.addWidget(toolbar)
+
+                    decision_tree_dialog.setLayout(decision_tree_layout)
+                    decision_tree_dialog.resize(1200, 800)
+                    decision_tree_dialog.show()
+        else:
+            QMessageBox.warning(self, "Insufficient Columns", "The dataset should have at least two columns to create a decision tree.")
+
+    def show_all_trees(self, grid_search, X, y, feature_names, target_labels):
+        all_trees_dialog = QDialog(self)
+        all_trees_layout = QVBoxLayout(all_trees_dialog)
+
+        tab_widget = QTabWidget()
+
+        for params in grid_search.cv_results_['params']:
+            # Create and fit a new estimator with these parameters
+            if isinstance(grid_search.estimator, DecisionTreeClassifier):
+                estimator = DecisionTreeClassifier(**params, random_state=42)
+            else:
+                estimator = DecisionTreeRegressor(**params, random_state=42)
+            estimator.fit(X, y)
+
+            tree_widget = self.create_tree_visualization(estimator, X, y, feature_names, target_labels, f"Decision Tree")
+            param_str = ", ".join(f"{k}={v}" for k, v in params.items())
+            tab_widget.addTab(tree_widget, param_str)
+
+        all_trees_layout.addWidget(tab_widget)
+        
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(all_trees_dialog.close)
+        all_trees_layout.addWidget(close_button)
+
+        all_trees_dialog.setLayout(all_trees_layout)
+        all_trees_dialog.resize(1000, 800)
+        all_trees_dialog.exec_()
+
+    def create_tree_visualization(self, tree, X, y, feature_names, target_labels, title):
+        tree_widget = QWidget()
+        tree_layout = QVBoxLayout(tree_widget)
+
+        fig, ax = plt.subplots(figsize=(15, 10))
+        plot_tree(tree, feature_names=feature_names, class_names=target_labels,
+                rounded=True, filled=True, fontsize=8, ax=ax,
+                proportion=True, precision=2, impurity=False, node_ids=True)
+        plt.title(title, fontsize=16, fontweight='bold')
+        plt.tight_layout(pad=1.0)
+
+        canvas = FigureCanvas(fig)
+        tree_layout.addWidget(canvas)
+
+        toolbar = NavigationToolbar(canvas, tree_widget)
+        tree_layout.addWidget(toolbar)
+
+        return tree_widget   
+        
+    def handle_neural_network_click(self):
+        columns = self.data.columns.tolist()
+        params_dialog = NeuralNetworkParamsDialog(self, columns=columns)
+        if params_dialog.exec_():
+            params = params_dialog.get_params()
+            if params is None:  # Check if params is None due to invalid input
+                return
+            try:
+                result = prepare_and_train_neural_network(self.data, params)
+
+                # Create and show NeuralNetworkResults
+                results_window = NeuralNetworkResults(self.data, params['test_columns'], params, result, parent=self)
+                results_window.exec_()  # Use exec_() instead of show() for modal behavior
+
+            except ValueError as e:
+                QMessageBox.critical(self, "Error", str(e))
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"An unexpected error occurred: {str(e)}")
+
+    def show_lime_results(self, model, X_test, feature_names):
+        lime_window = QDialog(self)
+        lime_layout = QVBoxLayout()
+
+        # Convert X_test to numpy array if it's a DataFrame
+        if isinstance(X_test, pd.DataFrame):
+            X_test_array = X_test.values
+        else:
+            X_test_array = X_test
+
+        # For binary classification, we need to modify the predict function
+        def predict_fn(x):
+            # Get the probabilities
+            proba = model.predict_proba(x)
+            
+            # Convert list to numpy array if necessary
+            if isinstance(proba, list):
+                proba = np.array(proba)
+                
+            # If proba has 3 dimensions, squeeze it to 2D
+            if proba.ndim == 3:
+                proba = np.squeeze(proba, axis=0)
+                
+            # Ensure the output is 2D with two columns (binary classification)
+            if proba.ndim == 1:
+                proba = proba.reshape(-1, 1)
+                
+            if proba.shape[1] == 1:
+                proba = np.hstack([1 - proba, proba])
+                
+            return proba
+
+        explainer = lime.lime_tabular.LimeTabularExplainer(
+            X_test_array,
+            feature_names=feature_names,
+            class_names=['Class 0', 'Class 1'],  # Binary classification
+            mode='classification'
+        )
+
+        instance_idx = np.random.randint(0, X_test_array.shape[0])
+        instance = X_test_array[instance_idx]
+
+        exp = explainer.explain_instance(
+            instance, 
+            predict_fn,
+            num_features=10,
+            num_samples=5000
+        )
+
+        text_explanation = QTextEdit()
+        text_explanation.setReadOnly(True)
+        text_explanation.setHtml("<h3>LIME Explanation:</h3>")
+        
+        # Get available labels from the explanation
+        available_labels = exp.available_labels()
+        
+        for label in available_labels:
+            text_explanation.append(f"<h4>Explanation for Class {label}:</h4>")
+            try:
+                for feature, importance in exp.as_list(label=label):
+                    text_explanation.append(f"<b>{feature}:</b> {importance:.4f}<br>")
+            except KeyError:
+                text_explanation.append("No explanation available for this class.<br>")
+            text_explanation.append("<br>")
+        
+        lime_layout.addWidget(text_explanation)
+
+        # Add LIME plot
+        try:
+            plt.figure(figsize=(10, 6))
+            exp.as_pyplot_figure()
+            canvas = FigureCanvas(plt.gcf())
+            lime_layout.addWidget(canvas)
+        except Exception as e:
+            error_text = QLabel(f"Error generating LIME plot: {str(e)}")
+            lime_layout.addWidget(error_text)
+
+        lime_window.setLayout(lime_layout)
+        lime_window.setWindowTitle("LIME Results")
+        lime_window.resize(800, 600)
+        lime_window.show()
+
+    def show_shap_results(self, model, X_test, feature_names):
+        shap_window = QDialog(self)
+        shap_layout = QVBoxLayout()
+
+        try:
+            # Get SHAP values
+            explainer = shap.Explainer(model, X_test)
+            shap_values = explainer(X_test)
+
+            # Create SHAP summary plot
+            plt.figure(figsize=(10, 6))
+            shap.summary_plot(shap_values, X_test, plot_type="bar", feature_names=feature_names, show=False)
+            plt.title("SHAP Feature Importance")
+            plt.tight_layout()
+            
+            canvas = FigureCanvas(plt.gcf())
+            shap_layout.addWidget(canvas)
+
+            # Add textual explanation
+            text_explanation = QTextEdit()
+            text_explanation.setReadOnly(True)
+            text_explanation.setHtml("<h3>SHAP Explanation:</h3>")
+
+            mean_shap_values = np.abs(shap_values.values).mean(axis=0)
+            feature_importance = sorted(zip(feature_names, mean_shap_values), key=lambda x: abs(x[1]), reverse=True)
+
+            for feature, importance in feature_importance:
+                text_explanation.append(f"<b>{feature}:</b> {float(importance):.4f}<br>")
+
+            shap_layout.addWidget(text_explanation)
+
+        except Exception as e:
+            error_message = QLabel(f"Error in SHAP computation: {str(e)}")
+            shap_layout.addWidget(error_message)
+
+        shap_window.setLayout(shap_layout)
+        shap_window.setWindowTitle("SHAP Results")
+        shap_window.resize(800, 600)
+        shap_window.show()
+
+    def show_eli5_results(self, model, X, y, feature_names):
+        eli5_window = QDialog(self)
+        eli5_layout = QVBoxLayout()
+
+        try:
+            # Get ELI5 explanation
+            explanation = get_eli5_explanation(model, X, y, mode='weights', feature_names=feature_names)
+        except Exception as e:
+            explanation = f"An error occurred while generating the ELI5 explanation: {str(e)}\n\n"
+            explanation += f"Model type: {type(model)}\n"
+            explanation += f"X shape: {X.shape}\n"
+            explanation += f"y shape: {y.shape}\n"
+        
+        # Display ELI5 explanation
+        eli5_text = QTextEdit()
+        eli5_text.setReadOnly(True)
+        eli5_text.setPlainText(explanation)
+        eli5_layout.addWidget(eli5_text)
+        eli5_window.setLayout(eli5_layout)
+        eli5_window.setWindowTitle("ELI5 Explanation")
+        eli5_window.resize(800, 600)
+        eli5_window.show()
+
+    def show_confusion_matrix(self, model, X_test, y_test):
+        y_pred = model.predict(X_test)
+        y_pred_classes = np.argmax(y_pred, axis=1)
+        y_true_classes = np.argmax(y_test, axis=1)
+
+        cm = confusion_matrix(y_true_classes, y_pred_classes)
+        
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+        plt.title('Confusion Matrix')
+        plt.ylabel('True label')
+        plt.xlabel('Predicted label')
+
+        confusion_matrix_window = QDialog(self)
+        confusion_matrix_window.setWindowTitle("Confusion Matrix")
+        layout = QVBoxLayout()
+
+        canvas = FigureCanvas(plt.gcf())
+        layout.addWidget(canvas)
+
+        confusion_matrix_window.setLayout(layout)
+        confusion_matrix_window.resize(800, 600)
+        confusion_matrix_window.show()
+
+    def handle_knn_click(self):
+        print("Starting KNN training")
+        columns = self.data.columns.tolist()
+        params_dialog = KNNParamsDialog(self, columns=columns)
+        if params_dialog.exec_():
+            params = params_dialog.get_params()
+
+
+            # Check if this dialog info already exists
+            dialog_info = DialogInfo("KNN", params)
+            if dialog_info in self.dialog_history:
+                QMessageBox.information(self, "Duplicate Dialog", "This KNN configuration has already been used.")
+                return
+            
+            # Remove any existing decision tree dialogs
+            self.dialog_history = [di for di in self.dialog_history if di.dialog_type != "DecisionTree"]
+            
+            self.dialog_history.append(dialog_info)
+
+            
+            if not params['train_columns']:
+                QMessageBox.warning(self, "Invalid Selection", "Please select at least one column for training.")
+                return
+            
+            if not params['test_column']:
+                QMessageBox.warning(self, "Invalid Selection", "Please select a target column.")
+                return
+            
+            if params['test_column'] in params['train_columns']:
+                QMessageBox.warning(self, "Invalid Selection", "Target column cannot be in training columns.")
+                return
+            
+            # Prepare and train the KNN model
+            model, X_train, X_test, y_train, y_test, preprocessor = prepare_and_train_knn(self.data, params)
+
+            # Create a new window to display results
+            results_window = QDialog(self)
+            results_window.setWindowTitle("K-Nearest Neighbors Results")
+            results_layout = QVBoxLayout()
+
+            # Display metrics
+            results_text = QTextEdit()
+            results_text.setReadOnly(True)
+            
+            if isinstance(model, KNeighborsClassifier):
+                accuracy = accuracy_score(y_test, model.predict(X_test))
+                f1 = f1_score(y_test, model.predict(X_test), average='weighted')
+                results_text.setHtml(f"""
+                    <b>Accuracy:</b> {accuracy:.4f}<br>
+                    <b>F1 Score:</b> {f1:.4f}<br>
+                """)
+            elif isinstance(model, KNeighborsRegressor):
+                mse = mean_squared_error(y_test, model.predict(X_test))
+                r2 = r2_score(y_test, model.predict(X_test))
+                results_text.setHtml(f"""
+                    <b>Mean Squared Error:</b> {mse:.4f}<br>
+                    <b>R-squared Score:</b> {r2:.4f}<br>
+                """)
+            
+            results_layout.addWidget(results_text)
+
+            # Add LIME button
+            lime_button = QPushButton("Show LIME Results")
+            lime_button.clicked.connect(lambda: self.show_knn_lime_results(model, X_train, X_test, preprocessor))
+            results_layout.addWidget(lime_button)
+
+            # Add SHAP button
+            shap_button = QPushButton("Show SHAP Results")
+            shap_button.clicked.connect(lambda: self.show_knn_shap_results(model, X_test, preprocessor))
+            results_layout.addWidget(shap_button)
+
+            # Add ELI5 button
+            eli5_button = QPushButton("Show ELI5 Explanation")
+            eli5_button.clicked.connect(lambda: self.show_eli5_results(model, X_test, y_test, preprocessor.get_feature_names_out()))
+            results_layout.addWidget(eli5_button)
+
+            # Add Time Series LIME button
+            time_series_lime_button = QPushButton("Show Time Series LIME Results")
+            time_series_lime_button.clicked.connect(lambda: show_time_series_lime_results_knn(model, X_train, 0, preprocessor.get_feature_names_out()))
+            results_layout.addWidget(time_series_lime_button)
+
+            results_window.setLayout(results_layout)
+            results_window.resize(800, 600)
+            results_window.show()
+        print("Finished KNN training")
+
+    def handle_svm_click(self):
+        columns = self.data.columns.tolist()
+        params_dialog = SVMParamsDialog(self, columns=columns)
+        if params_dialog.exec_():
+            params = params_dialog.get_params()
+
+            if not params['train_columns']:
+                QMessageBox.warning(self, "Invalid Selection", "Please select at least one column for training.")
+                return
+
+            if not params['test_column']:
+                QMessageBox.warning(self, "Invalid Selection", "Please select a target column.")
+                return
+
+            if params['test_column'] in params['train_columns']:
+                QMessageBox.warning(self, "Invalid Selection", "Target column cannot be in training columns.")
+                return
+
+            # Prepare and train the SVM model
+            X = self.data[params['train_columns']]
+            y = self.data[params['test_column']]
+            model, X_train, X_test, y_train, y_test, preprocessor = prepare_and_train_svm(X, y, params)
+
+            # Create a new window to display results
+            results_window = QDialog(self)
+            results_window.setWindowTitle("Support Vector Machine Results")
+            results_layout = QVBoxLayout()
+
+            # Display metrics
+            results_text = QTextEdit()
+            results_text.setReadOnly(True)
+
+            accuracy = accuracy_score(y_test, model.predict(X_test))
+            f1 = f1_score(y_test, model.predict(X_test), average='weighted')
+            results_text.setHtml(f"""
+                <b>Accuracy:</b> {accuracy:.4f}<br>
+                <b>F1 Score:</b> {f1:.4f}<br>
+            """)
+            results_layout.addWidget(results_text)
+
+            # Add LIME button
+            lime_button = QPushButton("Show LIME Results")
+            lime_button.clicked.connect(lambda: self.show_svm_lime_results(model, X_train, X_test, y_test, preprocessor))
+            results_layout.addWidget(lime_button)
+
+            # Add SHAP button
+            shap_button = QPushButton("Show SHAP Results")
+            shap_button.clicked.connect(lambda: self.show_svm_shap_results(model, X_test, preprocessor))
+            results_layout.addWidget(shap_button)
+
+            # Add ELI5 button
+            eli5_button = QPushButton("Show ELI5 Explanation")
+            eli5_button.clicked.connect(lambda: self.show_eli5_results(model, X_test, y_test, preprocessor.get_feature_names_out()))
+            results_layout.addWidget(eli5_button)
+
+            # Replace the existing Time Series LIME button with this new one
+            time_series_lime_button = QPushButton("Show Time Series LIME Results")
+            time_series_lime_button.clicked.connect(lambda: show_time_series_lime_results_svm(model, X_train, 0, X.columns.tolist()))
+            results_layout.addWidget(time_series_lime_button)
+
+            results_window.setLayout(results_layout)
+            results_window.resize(800, 600)
+            results_window.show()
+
+    def handle_gbm_click(self):
+        columns = self.data.columns.tolist()
+        params_dialog = GradientBoostingParamsDialog(self, columns=columns)
+        if params_dialog.exec_():
+            params = params_dialog.get_params()
+
+            try:
+                # Change this line to capture X_train
+                model, X_train, X_test, y_train, y_test, preprocessor = prepare_and_train_gbm(self.data, params)
+
+                # Create a new window to display results
+                results_window = QDialog(self)
+                results_window.setWindowTitle("Gradient Boosting Machine Results")
+                results_layout = QVBoxLayout()
+
+                # Display metrics
+                results_text = QTextEdit()
+                results_text.setReadOnly(True)
+
+                if isinstance(model, GradientBoostingClassifier):
+                    accuracy = accuracy_score(y_test, model.predict(X_test))
+                    f1 = f1_score(y_test, model.predict(X_test), average='weighted')
+                    results_text.setHtml(f"""
+                        <b>Accuracy:</b> {accuracy:.4f}<br>
+                        <b>F1 Score:</b> {f1:.4f}<br>
+                    """)
+                elif isinstance(model, GradientBoostingRegressor):
+                    mse = mean_squared_error(y_test, model.predict(X_test))
+                    r2 = r2_score(y_test, model.predict(X_test))
+                    results_text.setHtml(f"""
+                        <b>Mean Squared Error:</b> {mse:.4f}<br>
+                        <b>R-squared Score:</b> {r2:.4f}<br>
+                    """)
+
+                results_layout.addWidget(results_text)
+
+                # Add LIME button
+                lime_button = QPushButton("Show LIME Results")
+                lime_button.clicked.connect(lambda: self.show_gbm_lime_results(model, X_test, preprocessor))
+                results_layout.addWidget(lime_button)
+
+                # Add SHAP button
+                shap_button = QPushButton("Show SHAP Results")
+                shap_button.clicked.connect(lambda: self.show_gbm_shap_results(model, X_test, preprocessor))
+                results_layout.addWidget(shap_button)
+
+                # In the handle_gbm_click method of your DataWindow class
+                time_series_lime_button = QPushButton("Show Time Series LIME Results")
+                time_series_lime_button.clicked.connect(lambda: show_time_series_lime_results_gbm(model, X_train, 0, preprocessor.get_feature_names_out()))
+                results_layout.addWidget(time_series_lime_button)
+
+                results_window.setLayout(results_layout)
+                results_window.resize(800, 600)
+                results_window.show()
+
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"An error occurred: {str(e)}")
+
+    def handle_logistic_regression_click(self):
+        columns = self.data.columns.tolist()
+        params_dialog = LogisticRegressionParamsDialog(self, columns=columns)
+        if params_dialog.exec_():
+            params = params_dialog.get_params()
+            print("Params received:", params)  # Debug print
+
+            if not params['train_columns']:
+                QMessageBox.warning(self, "Invalid Selection", "Please select at least one training column.")
+                return
+
+            if not params['test_columns']:
+                QMessageBox.warning(self, "Invalid Selection", "Please select at least one test column.")
+                return
+
+            try:
+                print("Train columns:", params['train_columns'])
+                print("Test columns:", params['test_columns'])
+                print("Available columns:", self.data.columns)
+
+                X = self.data[params['train_columns']]
+                y = self.data[params['test_columns']]
+
+                # Split the data
+                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=params['test_size'], random_state=42)
+
+                # Create a preprocessing pipeline
+                preprocessor = Pipeline([
+                    ('scaler', StandardScaler()),
+                ])
+
+                # Create the model
+                base_model = LogisticRegression(C=params['C'], max_iter=params['max_iter'])
+                model = MultiOutputClassifier(base_model)
+
+                # Create the full pipeline
+                full_pipeline = Pipeline([
+                    ('preprocessor', preprocessor),
+                    ('classifier', MultiOutputClassifier(LogisticRegression(C=params['C'], max_iter=params['max_iter'])))
+                ])
+
+                # Fit the model
+                full_pipeline.fit(X_train, y_train)
+
+                # Predictions
+                y_pred = full_pipeline.predict(X_test)
+
+                # Create a new window to display results
+                results_window = QDialog(self)
+                results_window.setWindowTitle("Logistic Regression Results")
+                results_layout = QVBoxLayout()
+
+                # Display metrics
+                results_text = QTextEdit()
+                results_text.setReadOnly(True)
+
+                # Calculate metrics for each output column
+                accuracies = []
+                f1_scores = []
+                for i in range(y_test.shape[1]):
+                    accuracies.append(accuracy_score(y_test.iloc[:, i], y_pred[:, i]))
+                    f1_scores.append(f1_score(y_test.iloc[:, i], y_pred[:, i], average='weighted'))
+
+                results_html = "<h3>Results:</h3>"
+                for i, col in enumerate(params['test_columns']):
+                    results_html += f"<b>{col}:</b><br>"
+                    results_html += f"Accuracy: {accuracies[i]:.4f}<br>"
+                    results_html += f"F1 Score: {f1_scores[i]:.4f}<br><br>"
+
+                results_text.setHtml(results_html)
+                results_layout.addWidget(results_text)
+
+                # Add LIME button
+                lime_button = QPushButton("Show LIME Results")
+                lime_button.clicked.connect(lambda: self.show_lime_results(full_pipeline, X_test, params['train_columns']))
+                results_layout.addWidget(lime_button)
+
+                # Add SHAP button
+                shap_button = QPushButton("Show SHAP Results")
+                shap_button.clicked.connect(lambda: self.show_shap_results(full_pipeline, X_test, params['train_columns']))
+                results_layout.addWidget(shap_button)
+
+                results_window.setLayout(results_layout)
+                results_window.resize(800, 600)
+                results_window.show()
+
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"An error occurred: {str(e)}")
+                return
+
+    def show_shap_results(self, model, X_test, feature_names):
+        shap_window = QDialog(self)
+        shap_layout = QVBoxLayout()
+
+        debug_text = QTextEdit()
+        debug_text.setReadOnly(True)
+        shap_layout.addWidget(debug_text)
+
+        def log(message):
+            debug_text.append(message)
+            print(message)  # Also print to console for debugging
+
+        try:
+            log("Starting feature importance analysis...")
+
+            log(f"Model type: {type(model)}")
+            log(f"X_test type: {type(X_test)}")
+            log(f"X_test shape: {X_test.shape if hasattr(X_test, 'shape') else 'N/A'}")
+            log(f"Number of feature names: {len(feature_names)}")
+
+            if isinstance(X_test, pd.DataFrame):
+                X_test_array = X_test.values
+                log("Converted X_test from DataFrame to numpy array")
+            else:
+                X_test_array = X_test
+            
+            log(f"X_test_array shape: {X_test_array.shape}")
+
+            log("Attempting to get baseline predictions...")
+            baseline_predictions = model.predict(X_test_array)
+            log(f"Baseline predictions shape: {baseline_predictions.shape}")
+
+            log("Calculating feature importance...")
+            feature_importance = []
+            for i in range(X_test_array.shape[1]):
+                log(f"Processing feature {i + 1} of {X_test_array.shape[1]}")
+                X_permuted = X_test_array.copy()
+                X_permuted[:, i] = np.random.permutation(X_permuted[:, i])
+                permuted_predictions = model.predict(X_permuted)
+                
+                if baseline_predictions.ndim == 2 and baseline_predictions.shape[1] > 1:
+                    importance = np.mean([np.mean((baseline_predictions[:, j] - permuted_predictions[:, j])**2) 
+                                        for j in range(baseline_predictions.shape[1])])
+                else:
+                    importance = np.mean((baseline_predictions - permuted_predictions)**2)
+                
+                feature_importance.append(importance)
+                log(f"Importance for feature {i + 1}: {importance}")
+
+            log("Normalizing feature importance...")
+            feature_importance = np.array(feature_importance) / np.sum(feature_importance)
+
+            log("Sorting features by importance...")
+            sorted_idx = np.argsort(feature_importance)
+            sorted_features = [feature_names[i] for i in sorted_idx]
+
+            log("Generating bar plot...")
+            plt.figure(figsize=(10, 6))
+            plt.barh(range(len(sorted_features)), feature_importance[sorted_idx])
+            plt.yticks(range(len(sorted_features)), sorted_features)
+            plt.xlabel('Normalized Feature Importance')
+            plt.title('Feature Importance')
+            plt.tight_layout()
+            
+            canvas = FigureCanvas(plt.gcf())
+            shap_layout.addWidget(canvas)
+
+            log("Generating text explanation...")
+            text_explanation = QTextEdit()
+            text_explanation.setReadOnly(True)
+            text_explanation.setHtml("<h3>Feature Importance Explanation:</h3>")
+
+            for feature, importance in zip(sorted_features[::-1], feature_importance[sorted_idx][::-1]):
+                text_explanation.append(f"<b>{feature}:</b> {importance:.4f}<br>")
+
+            shap_layout.addWidget(text_explanation)
+
+            log("Feature importance analysis completed successfully.")
+
+        except Exception as e:
+            log(f"Error in feature importance computation: {str(e)}")
+            error_message = QLabel(f"Error in feature importance computation: {str(e)}")
+            shap_layout.addWidget(error_message)
+
+        shap_window.setLayout(shap_layout)
+        shap_window.setWindowTitle("Feature Importance Results")
+        shap_window.resize(800, 600)
+        shap_window.show()
+
+    def show_gbm_lime_results(self, model, X_test, preprocessor):
+        lime_window = QDialog(self)
+        lime_layout = QVBoxLayout()
+
+        # Add a QTextEdit for logging
+        log_text = QTextEdit()
+        log_text.setReadOnly(True)
+        lime_layout.addWidget(log_text)
+
+        def log(message):
+            log_text.append(message)
+            print(message)  # Also print to console for debugging
+
+        try:
+            log("Starting LIME analysis...")
+
+            # Get feature names from the preprocessor
+            feature_names = preprocessor.get_feature_names_out()
+            log(f"Number of features in X_test: {X_test.shape[1]}")
+            log(f"Number of feature names: {len(feature_names)}")
+            log(f"Feature names: {feature_names}")
+
+            # Get class names from the target variable
+            class_names = np.unique(self.data[self.data.columns[-1]])
+            log(f"Class names: {class_names}")
+
+            # Ensure X_test is a numpy array
+            if isinstance(X_test, pd.DataFrame):
+                X_test = X_test.values
+            log(f"X_test shape: {X_test.shape}")
+
+            # Handle feature mismatch
+            if X_test.shape[1] != len(feature_names):
+                log("Warning: Mismatch between number of features and feature names.")
+                log("Attempting to use the preprocessor to transform X_test...")
+                X_test = preprocessor.transform(X_test)
+                log(f"X_test shape after transformation: {X_test.shape}")
+
+            if X_test.shape[1] != len(feature_names):
+                log("Error: Feature mismatch persists. Using generic feature names.")
+                feature_names = [f"Feature_{i}" for i in range(X_test.shape[1])]
+
+            log("Creating LIME explainer...")
+            explainer = lime.lime_tabular.LimeTabularExplainer(
+                X_test,
+                feature_names=feature_names,
+                class_names=class_names,
+                discretize_continuous=True
+            )
+
+            # Select a random instance to explain
+            instance_index = np.random.randint(X_test.shape[0])
+            log(f"Explaining instance at index: {instance_index}")
+            exp = explainer.explain_instance(
+                X_test[instance_index], 
+                model.predict_proba, 
+                num_features=10
+            )
+
+            log("Creating LIME plot...")
+            # Manually create the LIME plot with orange bars
+            fig, ax = plt.subplots(figsize=(12, 8))
+            features, values = zip(*exp.as_list())
+            y_pos = range(len(features))
+            
+            # Create orange bars
+            bars = ax.barh(y_pos, values, align='center', color='orange', alpha=0.8)
+            
+            # Add value labels to the end of each bar
+            for i, v in enumerate(values):
+                ax.text(v, i, f' {v:.3f}', va='center', fontweight='bold')
+            
+            ax.set_yticks(y_pos)
+            ax.set_yticklabels(features, fontsize=10)
+            ax.invert_yaxis()  # labels read top-to-bottom
+            ax.set_xlabel('Feature Importance', fontsize=12, fontweight='bold')
+            ax.set_title('LIME Explanation', fontsize=14, fontweight='bold')
+            
+            # Remove top and right spines
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            
+            # Add a light grid
+            ax.grid(axis='x', linestyle='--', alpha=0.6)
+            
+            # Adjust layout and display
+            plt.tight_layout()
+            
+            log("Adding plot to window...")
+            canvas = FigureCanvas(fig)
+            lime_layout.addWidget(canvas)
+
+            # Add textual explanation
+            log("Adding textual explanation...")
+            text_explanation = QTextEdit()
+            text_explanation.setReadOnly(True)
+            text_explanation.setHtml("<h3>LIME Explanation:</h3>")
+            for feature, importance in exp.as_list():
+                text_explanation.append(f"<b>{feature}:</b> {importance:.4f}<br>")
+            lime_layout.addWidget(text_explanation)
+
+            log("LIME analysis completed successfully.")
+
+        except Exception as e:
+            log(f"Error in LIME computation: {str(e)}")
+            error_message = QLabel(f"Error in LIME computation: {str(e)}")
+            lime_layout.addWidget(error_message)
+
+        lime_window.setLayout(lime_layout)
+        lime_window.setWindowTitle("GBM LIME Results")
+        lime_window.resize(1000, 800)  # Increased size for better visibility
+        lime_window.show()
+        

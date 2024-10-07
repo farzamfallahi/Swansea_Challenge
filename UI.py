@@ -1907,4 +1907,983 @@ class DataWindow(NonModalDialog):
         lime_window.setWindowTitle("GBM LIME Results")
         lime_window.resize(1000, 800)  # Increased size for better visibility
         lime_window.show()
+
+    def show_gbm_shap_results(self, model, X_test, preprocessor):
+        shap_window = QDialog(self)
+        shap_layout = QVBoxLayout()
+
+        try:
+            # Get feature names from the preprocessor
+            feature_names = preprocessor.get_feature_names_out()
+
+            # Ensure X_test is a DataFrame with correct columns
+            if not isinstance(X_test, pd.DataFrame):
+                X_test = pd.DataFrame(X_test, columns=feature_names)
+            else:
+                # If X_test is already a DataFrame, ensure it has all required columns
+                missing_columns = set(feature_names) - set(X_test.columns)
+                for col in missing_columns:
+                    X_test[col] = 0  # Fill missing columns with a default value
+
+            # Ensure X_test has columns in the correct order
+            X_test = X_test[feature_names]
+
+            # Compute SHAP values
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer(X_test)
+
+            # Create SHAP summary plot
+            fig, ax = plt.subplots(figsize=(10, 6))
+            shap.summary_plot(shap_values, X_test, plot_type="bar", feature_names=feature_names, show=False)
+            plt.title("SHAP Feature Importance")
+            plt.tight_layout()
+            
+            canvas = FigureCanvas(fig)
+            shap_layout.addWidget(canvas)
+
+            # Add text explanation
+            text_explanation = QTextEdit()
+            text_explanation.setReadOnly(True)
+            text_explanation.setHtml("<h3>SHAP Explanation:</h3>")
+
+            # Calculate mean absolute SHAP values
+            mean_shap_values = np.abs(shap_values.values).mean(axis=0)
+
+            # Sort features by importance
+            feature_importance = sorted(zip(feature_names, mean_shap_values), key=lambda x: x[1], reverse=True)
+
+            for feature, importance in feature_importance:
+                text_explanation.append(f"<b>{feature}:</b> {importance:.4f}<br>")
+
+            shap_layout.addWidget(text_explanation)
+
+        except Exception as e:
+            error_message = QLabel(f"Error in SHAP computation: {str(e)}")
+            shap_layout.addWidget(error_message)
+
+        shap_window.setLayout(shap_layout)
+        shap_window.setWindowTitle("GBM SHAP Results")
+        shap_window.resize(800, 600)
+        shap_window.show()
+    
+    def show_svm_shap_results(self, model, X_test, preprocessor):
+        feature_names = preprocessor.get_feature_names_out()
         
+        print(f"X_test shape: {X_test.shape}")
+        print(f"Number of feature names: {len(feature_names)}")
+
+        # Ensure X_test is 2D
+        if X_test.ndim != 2:
+            X_test = X_test.reshape(-1, len(feature_names))
+
+        if X_test.shape[1] != len(feature_names):
+            print(f"Mismatch: X_test has {X_test.shape[1]} features, but {len(feature_names)} feature names provided.")
+            return
+
+        shap_window = QDialog(self)
+        shap_layout = QVBoxLayout()
+
+        try:
+            # If X_test is sparse, convert to dense
+            if scipy.sparse.issparse(X_test):
+                X_test = X_test.toarray()
+
+            shap_values, fig = perform_svm_shap_analysis(model, X_test, feature_names)
+            canvas = FigureCanvas(fig)
+            shap_layout.addWidget(canvas)
+        except Exception as e:
+            error_message = QLabel(f"Error in SHAP computation: {str(e)}")
+            shap_layout.addWidget(error_message)
+            print(f"Detailed error: {e}")
+            print(f"X_test type: {type(X_test)}")
+            print(f"X_test shape after potential reshaping: {X_test.shape}")
+
+        shap_window.setLayout(shap_layout)
+        shap_window.setWindowTitle("SVM SHAP Results")
+        shap_window.resize(800, 600)
+        shap_window.show()
+
+    def show_svm_lime_results(self, model, X_train, X_test, y_test, preprocessor):
+        lime_window = QDialog(self)
+        lime_layout = QVBoxLayout()
+
+        try:
+            # Get feature names from the preprocessor
+            feature_names = preprocessor.get_feature_names_out()
+
+            # Convert to dense array if sparse
+            if scipy.sparse.issparse(X_train):
+                X_train = X_train.toarray()
+            if scipy.sparse.issparse(X_test):
+                X_test = X_test.toarray()
+
+            # Ensure X_train and X_test are numpy arrays
+            X_train = np.array(X_train)
+            X_test = np.array(X_test)
+
+            # Determine if it's a classification or regression task
+            if isinstance(model, SVC):
+                mode = 'classification'
+                predict_fn = model.predict_proba
+                class_names = list(model.classes_)
+            else:
+                mode = 'regression'
+                predict_fn = model.predict
+                class_names = None
+
+            # Perform LIME analysis
+            explainer = lime.lime_tabular.LimeTabularExplainer(
+                X_train,
+                feature_names=feature_names,
+                class_names=class_names,
+                mode=mode,
+                random_state=42
+            )
+
+            # Select a single instance for explanation
+            instance_index = 0
+            instance = X_test[instance_index]
+
+            # Generate the explanation
+            exp = explainer.explain_instance(
+                instance, 
+                predict_fn,
+                num_features=len(feature_names),
+                num_samples=5000
+            )
+
+            # Get explanation as a list and sort by absolute importance
+            explanation = sorted(exp.as_list(), key=lambda x: abs(x[1]), reverse=True)
+
+            # Display LIME explanation text
+            lime_text = QTextEdit()
+            lime_text.setReadOnly(True)
+            lime_text.setHtml("<h3>LIME Explanation:</h3>")
+            for feature, importance in explanation:
+                lime_text.append(f"<b>{feature}:</b> {importance:.6f}<br>")
+            lime_layout.addWidget(lime_text)
+
+            # Generate and display LIME plot
+            fig, ax = plt.subplots(figsize=(10, 8))
+            features, importances = zip(*explanation)
+            y_pos = range(len(features))
+            
+            # Create color list based on importance values
+            colors = ['orange' if imp >= 0 else 'blue' for imp in importances]
+            
+            ax.barh(y_pos, importances, align='center', color=colors)
+            ax.set_yticks(y_pos)
+            ax.set_yticklabels(features)
+            ax.invert_yaxis()  # Labels read top-to-bottom
+            ax.set_xlabel('Feature Importance')
+            ax.set_title('LIME Explanation for SVM')
+            
+            # Adjust x-axis to show small values
+            max_importance = max(abs(imp) for imp in importances)
+            ax.set_xlim(-max_importance, max_importance)
+            
+            # Add a vertical line at x=0 for better readability
+            ax.axvline(x=0, color='black', linestyle='-', linewidth=0.5)
+            
+            plt.tight_layout()
+
+            canvas = FigureCanvas(fig)
+            lime_layout.addWidget(canvas)
+
+            # Add toolbar for the plot
+            toolbar = NavigationToolbar(canvas, lime_window)
+            lime_layout.addWidget(toolbar)
+
+        except Exception as e:
+            error_message = f"An error occurred while generating the LIME plot: {str(e)}"
+            print(error_message)
+            lime_text = QTextEdit()
+            lime_text.setPlainText(error_message)
+            lime_layout.addWidget(lime_text)
+
+        lime_window.setLayout(lime_layout)
+        lime_window.setWindowTitle("SVM LIME Results")
+        lime_window.resize(800, 600)
+        lime_window.show()
+
+    def show_knn_shap_results(self, model, X_test, preprocessor):
+        shap_window = QDialog(self)
+        shap_layout = QVBoxLayout()
+
+        # Get feature names from the preprocessor
+        feature_names = preprocessor.get_feature_names_out()
+
+        # Compute SHAP values
+        explainer = shap.KernelExplainer(model.predict, X_test)
+        shap_values = explainer.shap_values(X_test)
+
+        # Create SHAP summary plot
+        fig, ax = plt.subplots(figsize=(10, 6))
+        shap.summary_plot(shap_values, X_test, plot_type="bar", feature_names=feature_names, show=False)
+        plt.title("SHAP Feature Importance")
+        plt.tight_layout()
+        plt.show(block=False)
+
+        canvas = FigureCanvas(fig)
+        shap_layout.addWidget(canvas)
+
+        shap_window.setLayout(shap_layout)
+        shap_window.setWindowTitle("KNN SHAP Results")
+        shap_window.resize(800, 600)
+        shap_window.show()
+
+    def show_knn_lime_results(self, model, X_train, X_test, preprocessor):
+        lime_window = QDialog(self)
+        lime_layout = QVBoxLayout()
+
+        # Get feature names from the preprocessor
+        feature_names = preprocessor.get_feature_names_out()
+
+        # Perform LIME analysis
+        explainer = lime.lime_tabular.LimeTabularExplainer(X_train, feature_names=feature_names, class_names=model.classes_, discretize_continuous=True)
+        exp = explainer.explain_instance(X_test[0], model.predict_proba, num_features=len(feature_names))
+
+        # Display LIME explanation
+        lime_text = QTextEdit()
+        lime_text.setReadOnly(True)
+        lime_text.setHtml("<h3>LIME Explanation:</h3>")
+        for feature, importance in exp.as_list():
+            lime_text.append(f"<b>{feature}:</b> {importance:.4f}<br>")
+        lime_layout.addWidget(lime_text)
+
+        # Display LIME plot
+        fig = exp.as_pyplot_figure()
+        canvas = FigureCanvas(fig)
+        lime_layout.addWidget(canvas)
+
+        lime_window.setLayout(lime_layout)
+        lime_window.setWindowTitle("KNN LIME Results")
+        lime_window.resize(800, 600)
+        lime_window.show()
+
+    def show_time_series_lime_results(self, model, X_train, instance_index, feature_names):
+        lime_window = QDialog(self)
+        lime_layout = QVBoxLayout()
+
+        explainer = LimeTimeSeriesExplainer(
+            training_data=X_train.reshape(X_train.shape[0], -1),
+            feature_names=feature_names,
+            class_names=None,
+            feature_selection='auto',
+            num_features=10,
+            num_samples=5000,
+            random_state=42
+        )
+
+        instance = X_train[instance_index]
+
+        explanation = explainer.explain_instance(
+            instance=instance,
+            model=model,
+            labels=(1,),
+            num_features=10,
+            num_samples=5000,
+            distance_metric='euclidean',
+            model_regressor=None
+        )
+
+        # Display the explanation
+        lime_text = QTextEdit()
+        lime_text.setReadOnly(True)
+        lime_text.setPlainText(str(explanation.as_list()))
+        lime_layout.addWidget(lime_text)
+
+        lime_window.setLayout(lime_layout)
+        lime_window.setWindowTitle("LIME Results")
+        lime_window.show()
+
+    def show_recommendation(self):
+        recommendations = self.analyze_dataset()
+        dialog = RecommendationDialog(recommendations, self)
+        dialog.exec_()
+
+    def analyze_dataset(self):
+        recommendations = []
+        num_samples, num_features = self.data.shape
+        target_column = self.data.columns[-1]
+        num_classes = self.data[target_column].nunique()
+        has_missing_values = self.data.isnull().any().any()
+        is_balanced = len(self.data[target_column].value_counts().unique()) == 1
+        is_binary = num_classes == 2
+        is_multiclass = num_classes > 2
+        is_regression = self.data[target_column].dtype in ['float64', 'float32', 'int64', 'int32'] and num_classes > 10
+
+        if is_regression:
+            recommendations.append("This appears to be a regression problem.")
+        elif is_binary:
+            recommendations.append("This appears to be a binary classification problem.")
+        elif is_multiclass:
+            recommendations.append("This appears to be a multi-class classification problem.")
+
+        if num_samples < 1000:
+            recommendations.append("Your dataset is relatively small. Consider using models that work well with limited data:")
+            recommendations.append("- K-Nearest Neighbors: Good for small to medium-sized datasets.")
+            recommendations.append("- Decision Tree: Can work well on smaller datasets and provides interpretable results.")
+            if is_binary or (is_multiclass and num_classes < 5):
+                recommendations.append("- Support Vector Machines: Effective for smaller datasets, especially in binary classification.")
+
+        if num_samples >= 1000:
+            recommendations.append("Your dataset is of moderate to large size. Consider these models:")
+            recommendations.append("- Random Forest: Handles large datasets well and is less prone to overfitting.")
+            recommendations.append("- Gradient Boosting Machines: Powerful for both classification and regression tasks.")
+            if num_samples > 10000 and num_features > 20:
+                recommendations.append("- Neural Networks: Can capture complex patterns in large datasets with many features.")
+
+        if is_binary:
+            recommendations.append("For binary classification, also consider:")
+            recommendations.append("- Logistic Regression: Simple and interpretable for binary problems.")
+
+        if is_multiclass:
+            recommendations.append("For multi-class problems, these models are particularly suitable:")
+            recommendations.append("- Random Forest: Handles multi-class problems naturally.")
+            recommendations.append("- Support Vector Machines (with 'one-vs-rest' strategy): Can be effective for multi-class classification.")
+
+        if has_missing_values:
+            recommendations.append("Your dataset contains missing values. Consider:")
+            recommendations.append("- Decision Trees or Random Forests: Can handle missing values without imputation.")
+            recommendations.append("- Gradient Boosting Machines: Can work with missing values in some implementations.")
+            recommendations.append("Alternatively, consider imputing missing values before using other models.")
+
+        if not is_balanced and (is_binary or is_multiclass):
+            recommendations.append("Your dataset appears to be imbalanced. Consider:")
+            recommendations.append("- Ensemble methods like Random Forest or Gradient Boosting: Often handle imbalanced data better.")
+            recommendations.append("- Using techniques like oversampling, undersampling, or SMOTE to balance your dataset.")
+            recommendations.append("- Adjusting class weights in models that support it (e.g., Logistic Regression, SVM).")
+
+        if num_features > 100:
+            recommendations.append("Your dataset has a high number of features. Consider:")
+            recommendations.append("- Feature selection techniques to reduce dimensionality.")
+            recommendations.append("- Principal Component Analysis (PCA) for dimensionality reduction.")
+            recommendations.append("- Regularized models like Lasso or Ridge regression.")
+
+        return recommendations
+    
+class RecommendationDialog(QDialog):
+    def __init__(self, recommendations, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Model Recommendations")
+        self.setMinimumSize(500, 400)
+        self.resize(600, 500)
+
+        layout = QVBoxLayout(self)
+
+        # Create a QTextEdit widget to display the recommendations
+        self.text_edit = QTextEdit()
+        self.text_edit.setReadOnly(True)
+
+        # Format the recommendations
+        recommendation_text = "Based on the analysis of your dataset, here are the model recommendations:\n\n"
+        for recommendation in recommendations:
+            recommendation_text += f"• {recommendation}\n\n"
+        
+        self.text_edit.setPlainText(recommendation_text)
+
+        layout.addWidget(self.text_edit)
+
+        # Add an OK button
+        ok_button = QPushButton("OK")
+        ok_button.clicked.connect(self.accept)
+        layout.addWidget(ok_button)
+
+        self.setLayout(layout)
+
+class MultiDatasetMergeDialog(NonModalDialog):
+    def __init__(self, data_windows, main_window, parent=None):
+        super().__init__(parent)
+        self.main_window = main_window
+        self.data_windows = data_windows  # Add this line
+        self.selected_columns = {}
+        self.checkboxes = {}
+        self.setup_ui()
+
+        self.merge_button = QPushButton("Merge Selected Columns")
+        self.merge_button.clicked.connect(self.handle_merge)
+        self.layout().addWidget(self.merge_button)  # Use self.layout() instead of layout
+
+    def handle_merge(self):
+        merged_data = self.get_merged_data()
+        if merged_data is not None:
+            new_window = DataWindow(merged_data, "Merged from multiple files", self.main_window, self)
+            self.main_window.data_windows.append(new_window)
+            new_window.show()
+        else:
+            QMessageBox.warning(self, "Merge Error", "No columns were selected for merging.")
+        self.close()
+
+    def setup_ui(self):
+        self.setWindowTitle("Merge Columns from Multiple Datasets")
+        layout = QVBoxLayout(self)
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+
+        for data_window in self.data_windows:
+            group_box = QGroupBox(f"Dataset: {data_window.file_name}")
+            group_layout = QVBoxLayout()
+           
+            select_all_button = QPushButton("Select All")
+            select_all_button.clicked.connect(lambda checked, w=data_window: self.select_all_columns(w))
+            group_layout.addWidget(select_all_button)
+           
+            self.checkboxes[data_window] = []
+            for column in data_window.data.columns:
+                checkbox = QCheckBox(str(column))
+                checkbox.setProperty('column_name', column)
+                checkbox.stateChanged.connect(lambda state, w=data_window, c=column: self.update_selection(w, c, state))
+                group_layout.addWidget(checkbox)
+                self.checkboxes[data_window].append(checkbox)
+           
+            group_box.setLayout(group_layout)
+            scroll_layout.addWidget(group_box)
+
+        scroll_area.setWidget(scroll_content)
+        layout.addWidget(scroll_area)
+
+        merge_button = QPushButton("Merge Selected Columns")
+        merge_button.clicked.connect(self.accept)
+        layout.addWidget(merge_button)
+
+        merge_rows_button = QPushButton("Merge from rows")
+        merge_rows_button.clicked.connect(self.merge_from_rows)
+        layout.addWidget(merge_rows_button)
+
+        self.setLayout(layout)
+
+    def select_all_columns(self, data_window):
+        for checkbox in self.checkboxes[data_window]:
+            checkbox.setChecked(True)
+
+    def update_selection(self, data_window, column, state):
+        if data_window not in self.selected_columns:
+            self.selected_columns[data_window] = set()
+       
+        if state == Qt.Checked:
+            self.selected_columns[data_window].add(column)
+        else:
+            self.selected_columns[data_window].discard(column)
+
+    def get_merged_data(self):
+        merged_data = pd.DataFrame()
+        for data_window, columns in self.selected_columns.items():
+            if columns:
+                selected_data = data_window.data[list(columns)]
+                merged_data = pd.concat([merged_data, selected_data], axis=1)
+        return merged_data if not merged_data.empty else None
+
+    def merge_from_rows(self):
+        dfs_to_merge = []
+        for data_window in self.data_windows:
+            if data_window in self.selected_columns and self.selected_columns[data_window]:
+                selected_columns = list(self.selected_columns[data_window])
+                selected_data = data_window.data[selected_columns]
+                print(f"Merging data from {data_window.file_name}:")
+                print(selected_data)
+                dfs_to_merge.append(selected_data)
+
+        if dfs_to_merge:
+            merged_data = pd.concat(dfs_to_merge, axis=0, ignore_index=True)
+            new_window = DataWindow(merged_data, "Merged from rows", self.main_window)
+            self.main_window.data_windows.append(new_window)
+            new_window.show()  # Change this from new_window.exec_() to new_window.show()
+        else:
+            QMessageBox.warning(self, "Merge Error", "No datasets were selected for merging.")
+        
+        self.accept()
+
+class ColumnTitleDialog(QDialog):
+    def __init__(self, initial_title, num_columns, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Column Title")
+        self.setModal(True)
+        self.num_columns = num_columns
+
+        layout = QVBoxLayout()
+
+        # Add input field for column title
+        self.title_edit = QLineEdit()
+        self.title_edit.setText(initial_title)
+        layout.addWidget(self.title_edit)
+
+        # Add input field for column order
+        order_layout = QHBoxLayout()
+        order_label = QLabel("Column Order (0 to {})".format(num_columns - 1))
+        order_layout.addWidget(order_label)
+        self.order_edit = QLineEdit()
+        order_layout.addWidget(self.order_edit)
+        layout.addLayout(order_layout)
+
+        # Add button for modifying column title and order
+        self.modify_btn = QPushButton("Modify")
+        self.modify_btn.clicked.connect(self.accept)
+        layout.addWidget(self.modify_btn)
+
+        self.setLayout(layout)
+
+class MainWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("XAI Application")
+        self.resize(800, 600)
+        self.setup_ui()
+        self.datasets = []
+        self.file_paths = []
+        self.X_train = None
+        self.y_train = None
+        self.feature_names = None
+        self.merged_data = None
+        self.dialog_history = []
+        self.data_windows = []  # Make sure this line is present
+
+    def handle_describe_click(self):
+        for dataset, file_path in zip(self.datasets, self.file_paths):
+            data_window = DataWindow(dataset, os.path.basename(file_path), self, self)
+            self.data_windows.append(data_window)
+            data_window.show()  # Use show() instead of exec_()
+
+    def setup_ui(self):
+        main_layout = QVBoxLayout(self)
+
+        browse_layout = QHBoxLayout()
+        self.browse_button = QPushButton("Browse Dataset")
+        self.browse_button.clicked.connect(self.handle_browse_click)
+        browse_layout.addWidget(self.browse_button)
+        main_layout.addLayout(browse_layout)
+
+        button_layout = QHBoxLayout()
+        self.describe_button = QPushButton("Show Me The Data (Original)")
+        self.describe_button.clicked.connect(self.handle_describe_click)
+        self.describe_button.setEnabled(False)
+        button_layout.addWidget(self.describe_button)
+
+        main_layout.addLayout(button_layout)
+
+        self.decision_tree_button = QPushButton("Decision Tree and Confusion Matrix")
+        self.decision_tree_button.clicked.connect(self.handle_decision_tree_click)
+        self.decision_tree_button.setVisible(False)
+        main_layout.addWidget(self.decision_tree_button)
+
+        self.setLayout(main_layout)
+
+    def handle_browse_click(self):
+        file_dialog = QFileDialog(self)
+        file_dialog.setFileMode(QFileDialog.ExistingFiles)
+        file_dialog.setNameFilter("Datasets (*.csv *.xls *.xlsx)")
+        if file_dialog.exec_():
+            try:
+                selected_files = file_dialog.selectedFiles()
+                self.file_paths = selected_files
+                self.datasets = []
+                for selected_file_path in selected_files:
+                    if selected_file_path.endswith('.csv'):
+                        data = pd.read_csv(selected_file_path)
+                    elif selected_file_path.endswith(('.xls', '.xlsx')):
+                        data = pd.read_excel(selected_file_path)
+                    else:
+                        raise ValueError("Unsupported file format")
+
+                    self.datasets.append(data)
+                self.describe_button.setEnabled(True)
+                # self.decision_making_button.setEnabled(True)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load datasets: {str(e)}")
+
+    def handle_describe_click(self):
+        for dataset, file_path in zip(self.datasets, self.file_paths):
+            data_window = DataWindow(dataset, os.path.basename(file_path), self, self)
+            self.data_windows.append(data_window)
+            data_window.show()  # Show all DataWindow instances
+
+    def handle_data_description_click(self):
+        dialog = DataDescriptionDialog(self.datasets, self.file_paths)
+        dialog.exec_()
+
+    def handle_prepare_data_click(self):
+        if self.datasets:
+            self.show_prepare_data_dialog()
+        else:
+            QMessageBox.warning(self, "No Dataset", "Please load a dataset first.")
+
+    def handle_decision_tree_click(self):
+        print("Decision tree visualization triggered in handle_decision_tree_click method")
+        if self.X_train is None or self.y_train is None or self.feature_names is None:
+            QMessageBox.warning(self, "Warning", "Please prepare the dataset first.")
+            return
+        show_decision_tree(self.X_train, self.y_train, self.feature_names)
+        
+
+    def handle_merge_data(self, selected_data, file_name):
+        if self.merged_data is None:
+            self.merged_data = selected_data
+        else:
+            self.merged_data = pd.concat([self.merged_data, selected_data], axis=1)
+
+        new_window = DataWindow(self.merged_data, f"Merged from multiple files", self, merged_data=self.merged_data)
+        self.data_windows.append(new_window)
+        new_window.show()  # Change this from new_window.exec_() to new_window.show()
+
+    def closeEvent(self, event):
+        reply = QMessageBox.question(self, 'Confirm Exit', 'Are you sure you want to exit?',
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+        if reply == QMessageBox.Yes:
+            event.accept()
+        else:
+            event.ignore()
+
+    def show_prepare_data_dialog(self):
+        feature_names = self.datasets[0].columns.tolist() if self.datasets else []
+        dialog = PrepareDataDialog(self.datasets, feature_names, self, self)
+        dialog.show()
+
+    def handle_column_reordering(self):
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Reorder Columns")
+        dialog.setLabelText("Enter the new column order (comma-separated indices):")
+        dialog.setTextEchoMode(QLineEdit.Normal)
+
+        # Set a validator to accept only integers
+        int_validator = QIntValidator(dialog)
+        dialog.setTextValueValidator(int_validator)
+
+        if dialog.exec_():
+            column_order = dialog.textValue().split(",")
+            dataset = self.dataset
+            dataset.columns = [dataset.columns[int(idx)] for idx in column_order]
+
+class NeuralNetworkResults(QDialog):
+    def __init__(self, data, target_column, params, result, parent=None):
+        super().__init__(parent)
+        self.data = data
+        self.target_column = target_column
+        self.params = params
+        self.result = result
+        
+        # Unpack the result dictionary
+        self.model = result['model']
+        self.X_test = result['X_test']
+        self.y_test = result['y_test']
+        self.preprocessor = result['preprocessor']
+        self.is_regression = result['is_regression']
+        
+        self.initUI()
+
+    def initUI(self):
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        # Create tab widget
+        tab_widget = QTabWidget()
+        layout.addWidget(tab_widget)
+
+        # Model Results Tab
+        model_tab = QWidget()
+        model_layout = QVBoxLayout(model_tab)
+        self.create_model_results_content(model_layout)
+        tab_widget.addTab(model_tab, "Model Results")
+
+        # Hyperparameter Tuning Tab (if applicable)
+        if self.result.get('all_results'):
+            hyper_tab = QWidget()
+            hyper_layout = QVBoxLayout(hyper_tab)
+            self.create_hyperparameter_results_content(hyper_layout)
+            tab_widget.addTab(hyper_tab, "Hyperparameter Tuning")
+
+        self.setWindowTitle("Neural Network Results")
+        self.resize(800, 600)
+
+    def create_model_results_content(self, layout):
+        # Display metrics
+        metrics_text = QTextEdit()
+        metrics_text.setReadOnly(True)
+        html_content = "<h3>Model Metrics:</h3>"
+        
+        for col, metrics in self.result['metrics'].items():
+            html_content += f"<h4>Metrics for {col}:</h4>"
+            for metric_name, value in metrics.items():
+                html_content += f"<b>{metric_name}:</b> {value:.4f}<br>"
+        
+        metrics_text.setHtml(html_content)
+        layout.addWidget(metrics_text)
+
+        # Display learning curves
+        if 'history' in self.result:
+            fig, ax = plt.subplots(figsize=(8, 6))
+            ax.plot(self.result['history'].history['loss'], label='Training Loss')
+            ax.plot(self.result['history'].history['val_loss'], label='Validation Loss')
+            ax.set_xlabel('Epoch')
+            ax.set_ylabel('Loss')
+            ax.legend()
+            ax.set_title('Learning Curves')
+            
+            canvas = FigureCanvas(fig)
+            layout.addWidget(canvas)
+
+        # Add buttons for LIME, SHAP, etc.
+        button_layout = QHBoxLayout()
+        
+        lime_button = QPushButton("Show LIME Results")
+        lime_button.clicked.connect(self.show_lime_results)
+        button_layout.addWidget(lime_button)
+
+        shap_button = QPushButton("Show SHAP Results")
+        shap_button.clicked.connect(self.show_shap_results)
+        button_layout.addWidget(shap_button)
+
+        if not self.result['is_regression']:
+            cm_button = QPushButton("Show Confusion Matrix")
+            cm_button.clicked.connect(self.show_confusion_matrix)
+            button_layout.addWidget(cm_button)
+
+        layout.addLayout(button_layout)
+
+    def create_hyperparameter_results_content(self, layout):
+        results = self.result.get('all_results')
+        if not results:
+            layout.addWidget(QLabel("No hyperparameter tuning results available."))
+            return
+
+        scroll_area = QScrollArea()
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+
+        results_text = QTextEdit()
+        results_text.setReadOnly(True)
+        
+        html_content = "<h3>Hyperparameter Tuning Results:</h3>"
+        html_content += "<table border='1'><tr><th>Parameters</th><th>Mean Test Score</th><th>Std Test Score</th><th>Rank</th></tr>"
+        
+        for i, params in enumerate(results['params']):
+            html_content += f"<tr><td>{params}</td>"
+            html_content += f"<td>{results['mean_test_score'][i]:.4f}</td>"
+            html_content += f"<td>{results['std_test_score'][i]:.4f}</td>"
+            html_content += f"<td>{results['rank_test_score'][i]}</td></tr>"
+        
+        html_content += "</table>"
+        
+        if 'best_params_' in results:
+            html_content += "<h4>Best Parameters:</h4>"
+            html_content += f"<pre>{results['best_params_']}</pre>"
+        
+        results_text.setHtml(html_content)
+        scroll_layout.addWidget(results_text)
+
+        # Add a new section for individual hyperparameter accuracies
+        accuracies_text = QTextEdit()
+        accuracies_text.setReadOnly(True)
+        
+        html_content = "<h3>Accuracies for Each Hyperparameter Set:</h3>"
+        html_content += "<table border='1'><tr><th>Parameters</th><th>Accuracy</th></tr>"
+        
+        for i, params in enumerate(results['params']):
+            accuracy = results['mean_test_score'][i]
+            html_content += f"<tr><td>{params}</td><td>{accuracy:.4f}</td></tr>"
+        
+        html_content += "</table>"
+        
+        accuracies_text.setHtml(html_content)
+        scroll_layout.addWidget(accuracies_text)
+
+        scroll_area.setWidget(scroll_widget)
+        scroll_area.setWidgetResizable(True)
+        layout.addWidget(scroll_area)
+
+    def show_lime_results(self):
+        lime_window = QDialog(self)
+        lime_layout = QVBoxLayout()
+
+        # Determine if it's a Keras model or a scikit-learn pipeline
+        is_keras_model = isinstance(self.model, tf.keras.Model)
+
+        # Convert X_test to numpy array if it's a DataFrame
+        if isinstance(self.X_test, pd.DataFrame):
+            X_test_array = self.X_test.values
+        else:
+            X_test_array = self.X_test
+
+        # Determine if it's a regression or classification task
+        if is_keras_model:
+            is_regression = self.model.output_shape[-1] == 1
+            num_classes = self.model.output_shape[-1]
+        else:
+            is_regression = self.is_regression
+            num_classes = len(np.unique(self.y_test)) if not is_regression else 1
+
+        feature_names = self.preprocessor.get_feature_names_out()
+        explainer = lime.lime_tabular.LimeTabularExplainer(
+            X_test_array,
+            feature_names=feature_names,
+            class_names=[f'Class {i}' for i in range(num_classes)] if not is_regression else None,
+            mode='regression' if is_regression else 'classification'
+        )
+
+        instance_idx = np.random.randint(0, X_test_array.shape[0])
+        instance = X_test_array[instance_idx]
+
+        def predict_fn(x):
+            if is_keras_model:
+                return self.model.predict(x)
+            else:
+                if hasattr(self.model, 'predict_proba'):
+                    return self.model.predict_proba(x)
+                else:
+                    return self.model.predict(x)
+
+        exp = explainer.explain_instance(
+            instance, 
+            predict_fn,
+            num_features=10,
+            num_samples=5000
+        )
+
+        # Create and display the LIME plot
+        fig = exp.as_pyplot_figure()
+        canvas = FigureCanvas(fig)
+        lime_layout.addWidget(canvas)
+
+        # Add textual explanation
+        text_explanation = QTextEdit()
+        text_explanation.setReadOnly(True)
+        text_explanation.setHtml("<h3>LIME Explanation:</h3>")
+        for feature, importance in exp.as_list():
+            text_explanation.append(f"<b>{feature}:</b> {importance:.4f}<br>")
+        lime_layout.addWidget(text_explanation)
+
+        lime_window.setLayout(lime_layout)
+        lime_window.setWindowTitle("LIME Results")
+        lime_window.resize(800, 600)
+        lime_window.show()
+
+    def show_shap_results(self):
+        shap_window = QDialog(self)
+        shap_layout = QVBoxLayout()
+
+        try:
+            # Convert to DataFrame if necessary
+            if not isinstance(self.X_test, pd.DataFrame):
+                X_test_df = pd.DataFrame(self.X_test, columns=self.preprocessor.get_feature_names_out())
+            else:
+                X_test_df = self.X_test
+
+            # Ensure all features are numeric and convert to float64
+            X_test_numeric = X_test_df.select_dtypes(include=[np.number]).astype(np.float64)
+
+            # Handle missing values
+            X_test_numeric = X_test_numeric.fillna(X_test_numeric.mean())
+
+            # Create a function that mimics the model's predict method
+            def model_predict(x):
+                predictions = self.model.predict(x)
+                # If predictions is a 2D array, return the first column
+                if predictions.ndim > 1:
+                    return predictions[:, 0]
+                return predictions
+
+            # Use KernelExplainer
+            explainer = shap.KernelExplainer(model_predict, X_test_numeric[:100])
+
+            # Calculate SHAP values
+            shap_values = explainer.shap_values(X_test_numeric[:100])
+
+            # Ensure shap_values is 2D
+            if shap_values.ndim == 3:
+                shap_values = shap_values[0]
+
+            # Calculate mean absolute SHAP values for each feature
+            mean_shap = np.abs(shap_values).mean(axis=0)
+            feature_importance = pd.DataFrame(list(zip(X_test_numeric.columns, mean_shap)), 
+                                            columns=['feature', 'importance'])
+            feature_importance = feature_importance.sort_values('importance', ascending=True)
+
+            # Create bar plot
+            plt.figure(figsize=(10, 6))
+            plt.barh(feature_importance['feature'], feature_importance['importance'])
+            plt.title("SHAP Feature Importance")
+            plt.xlabel("Mean |SHAP Value|")
+            plt.tight_layout()
+
+            canvas = FigureCanvas(plt.gcf())
+            shap_layout.addWidget(canvas)
+
+            # Add textual explanation
+            text_explanation = QTextEdit()
+            text_explanation.setReadOnly(True)
+            text_explanation.setHtml("<h3>SHAP Explanation:</h3>")
+
+            for _, row in feature_importance.iterrows():
+                text_explanation.append(f"<b>{row['feature']}:</b> {row['importance']:.4f}<br>")
+
+            shap_layout.addWidget(text_explanation)
+
+        except Exception as e:
+            error_message = QLabel(f"Error in SHAP computation: {str(e)}")
+            shap_layout.addWidget(error_message)
+            print(f"Detailed error: {e}")
+
+        shap_window.setLayout(shap_layout)
+        shap_window.setWindowTitle("SHAP Results")
+        shap_window.resize(800, 600)
+        shap_window.show()
+
+    def show_confusion_matrix(self):
+        y_pred = self.model.predict(self.X_test)
+        y_pred_classes = np.argmax(y_pred, axis=1)
+        y_true_classes = np.argmax(self.y_test, axis=1)
+
+        cm = confusion_matrix(y_true_classes, y_pred_classes)
+        
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+        plt.title('Confusion Matrix')
+        plt.ylabel('True label')
+        plt.xlabel('Predicted label')
+
+        confusion_matrix_window = QDialog(self)
+        confusion_matrix_window.setWindowTitle("Confusion Matrix")
+        layout = QVBoxLayout()
+
+        canvas = FigureCanvas(plt.gcf())
+        layout.addWidget(canvas)
+
+        confusion_matrix_window.setLayout(layout)
+        confusion_matrix_window.resize(800, 600)
+        confusion_matrix_window.show()
+
+    def format_classification_report(self, report):
+        html = "<style>table {border-collapse: collapse;} th, td {border: 1px solid black; padding: 8px;}</style>"
+        html += "<h2>Classification Report</h2>"
+        html += "<table><tr><th>Class</th><th>Precision</th><th>Recall</th><th>F1-Score</th><th>Support</th></tr>"
+        
+        for class_name, metrics in report.items():
+            if class_name in ['accuracy', 'macro avg', 'weighted avg']:
+                continue
+            html += f"<tr><td>{class_name}</td>"
+            html += f"<td>{metrics['precision']:.2f}</td>"
+            html += f"<td>{metrics['recall']:.2f}</td>"
+            html += f"<td>{metrics['f1-score']:.2f}</td>"
+            html += f"<td>{metrics['support']}</td></tr>"
+        
+        html += f"<tr><td colspan='5'><b>Accuracy: {report['accuracy']:.2f}</b></td></tr>"
+        html += "</table>"
+        return html
+    
+class DialogInfo:
+    def __init__(self, dialog_type, parameters):
+        self.dialog_type = dialog_type
+        self.parameters = parameters
+        self.instance_count = 1  # Add this line
+
+    def __eq__(self, other):
+        return (self.dialog_type == other.dialog_type and 
+                self.parameters == other.parameters)
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    main_window = MainWindow()
+    main_window.show()
+    sys.exit(app.exec_())

@@ -83,7 +83,7 @@ This project is a comprehensive GUI application for data analysis and machine le
 
 ## File Structure
 
-- `Front.py`: Main application GUI
+- `UI.py`: Main application GUI
 - `data_viewer.py`: Data viewing dialog
 - `decision_tree.py`: Decision tree implementation and visualization
 - `Neural_Network.py`: Neural network model implementation

@@ -61,7 +61,7 @@ This project is a comprehensive GUI application for data analysis and machine le
 
 1. Run the main application:
    ```
-   python Front.py
+   python UI.py
    ```
 
 2. Use the GUI to load your dataset, perform data preparation, and choose your desired analysis or machine learning model.

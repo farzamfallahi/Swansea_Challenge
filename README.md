@@ -1,6 +1,5 @@
 # Swansea_Challenge
 A software which is the showcase of my skills
-Certainly! Here's the updated README.md with your name and GitHub repository:
 
 # XAI Data Analysis and Machine Learning Application
 
